@@ -58,7 +58,7 @@ class Syncer:
     def __init__(self, cfg: Settings, odoo: Odoo | None = None, drive: Drive | None = None):
         self.cfg = cfg
         self.odoo = odoo or Odoo(cfg.odoo_url, cfg.odoo_db, cfg.odoo_login, cfg.odoo_api_key, cfg.odoo_company_id)
-        self.drive = drive or Drive(cfg.google_sa_json)
+        self.drive = drive or Drive.from_settings(cfg)
         self.lock = threading.Lock()
         self.last_report: dict | None = None
         self._company_currency: str | None = None
