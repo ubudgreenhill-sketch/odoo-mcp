@@ -28,7 +28,12 @@ class Settings:
         self.odoo_journal_id = int(os.getenv("ODOO_PURCHASE_JOURNAL_ID", "0") or 0)
 
         # --- Google ---
+        # either a service account JSON ...
         self.google_sa_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+        # ... or an OAuth client (Client ID / Client secret) + refresh token (get it via /<MCP_SECRET>/oauth/start)
+        self.google_client_id = os.getenv("GOOGLE_CLIENT_ID", "")
+        self.google_client_secret = os.getenv("GOOGLE_CLIENT_SECRET", "")
+        self.google_refresh_token = os.getenv("GOOGLE_REFRESH_TOKEN", "")
         self.sheet_file_id = os.getenv("SHEET_FILE_ID", "")
         self.sheet_name = os.getenv("SHEET_NAME", "Expenses")
         # optional override of header names: {"number": "№", "payee": "Payee", ...}
@@ -59,11 +64,19 @@ class Settings:
         # --- Server ---
         self.mcp_secret = os.getenv("MCP_SECRET", "")
         self.port = int(os.getenv("PORT", "8000"))
+        dom = os.getenv("RAILWAY_PUBLIC_DOMAIN", "")
+        self.public_url = (os.getenv("PUBLIC_URL", "") or (f"https://{dom}" if dom else "")).rstrip("/")
+
+    @property
+    def google_oauth_ready(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret and self.google_refresh_token)
 
     def missing(self) -> list[str]:
         req = {
             "ODOO_URL": self.odoo_url, "ODOO_DB": self.odoo_db, "ODOO_LOGIN": self.odoo_login,
-            "ODOO_API_KEY": self.odoo_api_key, "GOOGLE_SERVICE_ACCOUNT_JSON": self.google_sa_json,
+            "ODOO_API_KEY": self.odoo_api_key,
+            "GOOGLE_SERVICE_ACCOUNT_JSON or GOOGLE_CLIENT_ID+GOOGLE_CLIENT_SECRET+GOOGLE_REFRESH_TOKEN":
+                self.google_sa_json or self.google_oauth_ready,
             "SHEET_FILE_ID": self.sheet_file_id, "MCP_SECRET": self.mcp_secret,
         }
         return [k for k, v in req.items() if not v]
