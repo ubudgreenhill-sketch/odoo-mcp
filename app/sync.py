@@ -240,7 +240,7 @@ class Syncer:
                 if not cfg.create_partners:
                     res["error"].append({**item, "reason": "partner not found in Odoo and CREATE_PARTNERS=false"})
                     continue
-                plan["partner"] = f"(new) {r.payee}"
+                plan["partner"] = f"(new) {cfg.partner_aliases.get(r.payee) or r.payee}"
             acc_code = cfg.type_account_map.get(r.type)
             if acc_code:
                 plan["account_code"] = acc_code
@@ -255,8 +255,9 @@ class Syncer:
         p = self.match_partner(payee, partners)
         if p:
             return p["id"]
-        pid = self.odoo.call("res.partner", "create", {"name": payee, "is_company": True, "supplier_rank": 1})
-        partners.append({"id": pid, "name": payee, "is_company": True})
+        name = self.cfg.partner_aliases.get(payee) or payee
+        pid = self.odoo.call("res.partner", "create", {"name": name, "is_company": True, "supplier_rank": 1})
+        partners.append({"id": pid, "name": name, "is_company": True})
         return pid
 
     def _narration(self, r: Row) -> str:
