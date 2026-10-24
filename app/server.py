@@ -1,14 +1,19 @@
 """MCP server: Google Drive expenses sheet → Odoo vendor bills, with dedupe and reconciliation tools."""
+import hashlib
+import hmac
+import html
 import json
 import logging
+import urllib.parse
 from datetime import date, datetime
 
 import anyio
+import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .config import settings
 from .sync import Syncer
@@ -150,8 +155,61 @@ async def connector_status() -> str:
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health(_: Request) -> JSONResponse:
-    return JSONResponse({"ok": True, "configured": not missing,
+    return JSONResponse({"ok": True, "configured": not missing, "missing": missing,
                          "last_sync": (syncer.last_report or {}).get("at") if syncer else None})
+
+
+# ---------------------------------------------------------------- Google OAuth helper (one-time)
+GOOGLE_AUTH = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_TOKEN = "https://oauth2.googleapis.com/token"
+
+
+def _redirect_uri(request: Request) -> str:
+    base = settings.public_url or f"https://{request.url.hostname}"
+    return f"{base}/oauth/callback"
+
+
+def _state() -> str:
+    return hmac.new(settings.mcp_secret.encode(), b"google-oauth", hashlib.sha256).hexdigest()[:32]
+
+
+if settings.mcp_secret:
+    @mcp.custom_route(f"/{settings.mcp_secret}/oauth/start", methods=["GET"])
+    async def oauth_start(request: Request):
+        if not (settings.google_client_id and settings.google_client_secret):
+            return HTMLResponse("<h3>Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Railway first.</h3>", 400)
+        q = urllib.parse.urlencode({
+            "client_id": settings.google_client_id, "redirect_uri": _redirect_uri(request),
+            "response_type": "code", "scope": "https://www.googleapis.com/auth/drive.readonly",
+            "access_type": "offline", "prompt": "consent", "state": _state()})
+        return RedirectResponse(f"{GOOGLE_AUTH}?{q}")
+
+    @mcp.custom_route("/oauth/callback", methods=["GET"])
+    async def oauth_callback(request: Request):
+        p = request.query_params
+        if not hmac.compare_digest(p.get("state", ""), _state()):
+            return HTMLResponse("<h3>Invalid state.</h3>", 400)
+        if p.get("error"):
+            return HTMLResponse(f"<h3>Google returned an error: {html.escape(p['error'])}</h3>", 400)
+
+        def exchange():
+            return requests.post(GOOGLE_TOKEN, data={
+                "code": p.get("code", ""), "client_id": settings.google_client_id,
+                "client_secret": settings.google_client_secret, "redirect_uri": _redirect_uri(request),
+                "grant_type": "authorization_code"}, timeout=30)
+
+        r = await anyio.to_thread.run_sync(exchange)
+        data = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+        rt = data.get("refresh_token")
+        if not rt:
+            return HTMLResponse(f"<h3>No refresh token received</h3><pre>{html.escape(r.text[:1000])}</pre>", 400)
+        return HTMLResponse(
+            "<meta name='viewport' content='width=device-width'>"
+            "<div style='font-family:sans-serif;max-width:640px;margin:40px auto;padding:0 16px'>"
+            "<h2>Google access granted</h2>"
+            "<p>Copy this value into Railway → Variables as <b>GOOGLE_REFRESH_TOKEN</b>, then redeploy:</p>"
+            f"<textarea style='width:100%;height:90px' readonly onclick='this.select()'>{html.escape(rt)}</textarea>"
+            "<p>Do not share it. This page is shown only once.</p></div>")
 
 
 def scheduled_job():
