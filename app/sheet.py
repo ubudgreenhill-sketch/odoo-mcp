@@ -8,6 +8,7 @@ from datetime import date, datetime, timedelta
 import openpyxl
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials as UserCredentials
 
 DRIVE = "https://www.googleapis.com/drive/v3"
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
@@ -55,12 +56,27 @@ class Row:
                 "description": self.description[:120]}
 
 
+TOKEN_URI = "https://oauth2.googleapis.com/token"
+
+
 class Drive:
-    def __init__(self, sa_json: str):
-        info = json.loads(sa_json)
-        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-        self.email = info.get("client_email", "")
+    def __init__(self, sa_json: str = "", client_id: str = "", client_secret: str = "", refresh_token: str = ""):
+        if sa_json:
+            info = json.loads(sa_json)
+            creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+            self.email = info.get("client_email", "")
+        elif client_id and client_secret and refresh_token:
+            creds = UserCredentials(None, refresh_token=refresh_token, token_uri=TOKEN_URI, client_id=client_id,
+                                    client_secret=client_secret, scopes=SCOPES)
+            self.email = "the Google account that authorized the OAuth client"
+        else:
+            raise ValueError("Google credentials missing: set GOOGLE_SERVICE_ACCOUNT_JSON or "
+                             "GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN")
         self.s = AuthorizedSession(creds)
+
+    @classmethod
+    def from_settings(cls, cfg) -> "Drive":
+        return cls(cfg.google_sa_json, cfg.google_client_id, cfg.google_client_secret, cfg.google_refresh_token)
 
     def _get(self, url, **params):
         params.setdefault("supportsAllDrives", "true")
