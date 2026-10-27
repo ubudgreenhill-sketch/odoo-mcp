@@ -16,6 +16,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from .config import settings
+from .sales import SalesReports
 from .sync import Syncer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -34,7 +35,9 @@ mcp = FastMCP(
         "Every bill gets reference EXP-<row №>; rows already in Odoo are never created twice. "
         "Always run preview_sync first and show the user new rows, duplicates and possible duplicates; "
         "only call run_sync after the user confirms. Never force-create possible duplicates without the user's "
-        "explicit approval for those row numbers."),
+        "explicit approval for those row numbers. "
+        "Read-only sales reports: sales_by_shop (customer invoices by shop × product × month: qty, amounts, paid) "
+        "and stock_moves_by_location (consignment stock flow per shop location)."),
     host="0.0.0.0",
     port=settings.port,
     streamable_http_path=f"/{settings.mcp_secret or 'mcp-secret-not-set'}/mcp",
@@ -117,6 +120,35 @@ async def unreconciled_bank_lines(date_from: str, date_to: str, journal_id: int 
     s = _need()
     return _out(await _thread(s.unreconciled_bank_lines, _d(date_from, date.today()), _d(date_to, date.today()),
                               journal_id))
+
+
+def _sales() -> SalesReports:
+    s = _need()
+    return SalesReports(s.odoo, s.company_currency())
+
+
+@mcp.tool()
+async def sales_by_shop(date_from: str, date_to: str, shop: str | None = None, product: str | None = None,
+                        include_draft: bool = False, by_month: bool = True, include_rows: bool = True) -> str:
+    """READ-ONLY sales report from customer invoices/credit notes in Odoo for a period (dates YYYY-MM-DD, by invoice
+    date). Returns totals, by_month, by_shop (per month), by_product (per month) and detailed rows
+    month × shop × product with qty, unit, amount excl. tax, incl. tax, paid and unpaid (payment status allocated
+    pro rata), plus invoice numbers. Optional filters: shop / product name substring; include_draft adds draft
+    invoices (counted as unpaid); include_rows=false returns only the summaries."""
+    r = _sales()
+    return _out(await _thread(r.sales_by_shop, _d(date_from, date.today()), _d(date_to, date.today()), shop, product,
+                              include_draft, by_month, include_rows))
+
+
+@mcp.tool()
+async def stock_moves_by_location(date_from: str, date_to: str, location: str | None = None,
+                                  product: str | None = None, by_month: bool = True) -> str:
+    """READ-ONLY stock flow per internal location (consignment shops are internal locations) for a period:
+    received, to_customers (sell-out deliveries), returned_from_customers, sent_to_other_internal,
+    inventory_adjustment, per month × location × product. Optional location / product name substring filters."""
+    r = _sales()
+    return _out(await _thread(r.stock_moves_by_location, _d(date_from, date.today()), _d(date_to, date.today()),
+                              location, product, by_month))
 
 
 @mcp.tool()
