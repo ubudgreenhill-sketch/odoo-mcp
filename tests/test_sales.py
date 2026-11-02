@@ -122,6 +122,28 @@ def test_stock_moves():
     assert all("WH/Stock" != x["location"] for x in r["rows"])
 
 
+def test_open_sale_orders():
+    db = dict(DB)
+    db["sale.order"] = [
+        {"id": 1, "name": "S00010", "date_order": "2026-09-01 10:00:00", "partner_id": SHOP_A, "state": "sent",
+         "invoice_status": "no", "amount_untaxed": 500.0, "amount_total": 555.0, "invoice_ids": [], "order_line": []},
+        {"id": 2, "name": "S00011", "date_order": "2026-10-01 10:00:00", "partner_id": SHOP_B, "state": "sale",
+         "invoice_status": "to invoice", "amount_untaxed": 1000.0, "amount_total": 1110000.0, "invoice_ids": [2],
+         "order_line": []},
+        {"id": 3, "name": "S00012", "date_order": "2026-10-02 10:00:00", "partner_id": SHOP_B, "state": "sale",
+         "invoice_status": "invoiced", "amount_untaxed": 1.0, "amount_total": 1.0, "invoice_ids": [], "order_line": []},
+        {"id": 4, "name": "S00013", "date_order": "2026-10-03 10:00:00", "partner_id": SHOP_B, "state": "cancel",
+         "invoice_status": "no", "amount_untaxed": 9.0, "amount_total": 9.0, "invoice_ids": [], "order_line": []},
+    ]
+    o = FakeOdoo(db)
+    o.base_url_for = lambda m, i: f"x/{m}/{i}"
+    r = SalesReports(o).open_sale_orders()
+    assert r["totals"]["orders"] == 2 and r["totals"]["amount_total"] == 1110555.0
+    seseh = next(x for x in r["by_shop"] if x["shop"].startswith("Seseh"))
+    assert seseh["invoiced_posted"] == 1110000.0 and seseh["not_invoiced"] == 0
+    assert SalesReports(o).open_sale_orders(shop="wellness")["totals"]["orders"] == 1
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

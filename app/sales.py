@@ -218,3 +218,77 @@ class SalesReports:
                           "customers (consignment sell-out if shops are internal locations); 'received' = transfers in.",
                           "inventory_adjustment: + found / − lost via inventory counts."],
                 "rows": out}
+
+    # ------------------------------------------------------------------ sale orders / pro-formas
+    def open_sale_orders(self, d_from: date | None = None, d_to: date | None = None, shop: str | None = None,
+                         include_invoiced: bool = False, include_lines: bool = False) -> dict:
+        """Sale orders (quotations / pro-formas / confirmed orders) that are not fully invoiced."""
+        sf = self.odoo.fields("sale.order")
+        fields = ["id", "name", "date_order", "partner_id", "state", "invoice_status", "amount_untaxed",
+                  "amount_total", "currency_id", "client_order_ref", "validity_date", "invoice_ids", "order_line"]
+        if sf:
+            fields = [f for f in fields if f in sf or f == "id"]
+        dom = [("state", "!=", "cancel")]
+        if not include_invoiced:
+            dom.append(("invoice_status", "!=", "invoiced"))
+        if d_from:
+            dom.append(("date_order", ">=", f"{d_from.isoformat()} 00:00:00"))
+        if d_to:
+            dom.append(("date_order", "<=", f"{d_to.isoformat()} 23:59:59"))
+        orders = [o for o in self.odoo.search_read("sale.order", dom, fields)
+                  if _match(_m2o(o.get("partner_id"))[1], shop)]
+
+        inv_amount = {}
+        inv_ids = sorted({i for o in orders for i in (o.get("invoice_ids") or [])})
+        for ids in _chunks(inv_ids):
+            for m in self.odoo.search_read("account.move", [("id", "in", ids), ("state", "=", "posted")],
+                                           ["id", "amount_total", "move_type"]):
+                inv_amount[m["id"]] = (-1 if m.get("move_type") == "out_refund" else 1) * (m.get("amount_total") or 0)
+
+        lines_by_order = defaultdict(list)
+        if include_lines:
+            lids = [l for o in orders for l in (o.get("order_line") or [])]
+            for ids in _chunks(lids):
+                for l in self.odoo.search_read("sale.order.line", [("id", "in", ids)],
+                                               ["order_id", "product_id", "name", "product_uom_qty", "qty_delivered",
+                                                "qty_invoiced", "price_unit", "price_total"]):
+                    if l.get("product_id"):
+                        lines_by_order[_m2o(l.get("order_id"))[0]].append({
+                            "product": _m2o(l.get("product_id"))[1], "qty": l.get("product_uom_qty"),
+                            "delivered": l.get("qty_delivered"), "invoiced": l.get("qty_invoiced"),
+                            "price_unit": l.get("price_unit"), "total": _r(l.get("price_total"))})
+
+        out, per_shop, per_state = [], defaultdict(lambda: {"amount_total": 0.0, "invoiced": 0.0, "orders": 0}), \
+            defaultdict(lambda: {"amount_total": 0.0, "orders": 0})
+        for o in sorted(orders, key=lambda x: (str(x.get("date_order")), x.get("name") or "")):
+            pname = _m2o(o.get("partner_id"))[1] or "(no customer)"
+            invd = sum(inv_amount.get(i, 0.0) for i in (o.get("invoice_ids") or []))
+            rec = {"order": o.get("name"), "date": str(o.get("date_order") or "")[:10], "shop": pname,
+                   "state": o.get("state"), "invoice_status": o.get("invoice_status"),
+                   "amount_untaxed": _r(o.get("amount_untaxed")), "amount_total": _r(o.get("amount_total")),
+                   "invoiced_posted": _r(invd), "not_invoiced": _r((o.get("amount_total") or 0) - invd),
+                   "ref": o.get("client_order_ref") or "", "url": self.odoo.base_url_for("sale.order", o["id"])}
+            if include_lines:
+                rec["lines"] = lines_by_order.get(o["id"], [])
+            out.append(rec)
+            s = per_shop[pname]
+            s["amount_total"] += rec["amount_total"]
+            s["invoiced"] += invd
+            s["orders"] += 1
+            st = per_state[f'{o.get("state")}/{o.get("invoice_status")}']
+            st["amount_total"] += rec["amount_total"]
+            st["orders"] += 1
+
+        by_shop = sorted([{"shop": k, "orders": v["orders"], "amount_total": _r(v["amount_total"]),
+                           "invoiced_posted": _r(v["invoiced"]), "not_invoiced": _r(v["amount_total"] - v["invoiced"])}
+                          for k, v in per_shop.items()], key=lambda d: -d["amount_total"])
+        return {"currency": self.ccy, "filters": {"from": d_from and d_from.isoformat(), "to": d_to and d_to.isoformat(),
+                                                   "shop": shop, "include_invoiced": include_invoiced},
+                "notes": ["state: draft = quotation, sent = quotation/pro-forma sent, sale = confirmed order.",
+                          "invoice_status: no = nothing to invoice yet, to invoice = delivered/ordered but not invoiced, "
+                          "invoiced = fully invoiced (excluded unless include_invoiced).",
+                          "Customer payments are not registered in Odoo, so 'paid' cannot be derived here."],
+                "totals": {"orders": len(out), "amount_total": _r(sum(x["amount_total"] for x in out)),
+                           "not_invoiced": _r(sum(x["not_invoiced"] for x in out))},
+                "by_state": {k: {"orders": v["orders"], "amount_total": _r(v["amount_total"])} for k, v in per_state.items()},
+                "by_shop": by_shop, "orders": out}

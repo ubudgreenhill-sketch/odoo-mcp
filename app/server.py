@@ -37,7 +37,8 @@ mcp = FastMCP(
         "only call run_sync after the user confirms. Never force-create possible duplicates without the user's "
         "explicit approval for those row numbers. "
         "Read-only sales reports: sales_by_shop (customer invoices by shop × product × month: qty, amounts, paid) "
-        "and stock_moves_by_location (consignment stock flow per shop location)."),
+        "stock_moves_by_location (consignment stock flow per shop location) and open_sale_orders (pro-formas / "
+        "quotations / orders not yet invoiced)."),
     host="0.0.0.0",
     port=settings.port,
     streamable_http_path=f"/{settings.mcp_secret or 'mcp-secret-not-set'}/mcp",
@@ -149,6 +150,18 @@ async def stock_moves_by_location(date_from: str, date_to: str, location: str | 
     r = _sales()
     return _out(await _thread(r.stock_moves_by_location, _d(date_from, date.today()), _d(date_to, date.today()),
                               location, product, by_month))
+
+
+@mcp.tool()
+async def open_sale_orders(date_from: str | None = None, date_to: str | None = None, shop: str | None = None,
+                           include_invoiced: bool = False, include_lines: bool = False) -> str:
+    """READ-ONLY list of sale orders (quotations, pro-forma invoices, confirmed orders) that are not fully invoiced,
+    with totals by shop and by state/invoice_status. Pro-formas for consignment shops live here, not in invoices.
+    Optional order-date range (YYYY-MM-DD), shop name substring, include_invoiced, include_lines (product lines with
+    ordered/delivered/invoiced qty)."""
+    r = _sales()
+    return _out(await _thread(r.open_sale_orders, _d(date_from, date(2000, 1, 1)) if date_from else None,
+                              _d(date_to, date.today()) if date_to else None, shop, include_invoiced, include_lines))
 
 
 @mcp.tool()
